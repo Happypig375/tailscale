@@ -7,6 +7,7 @@ package ipnserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -217,6 +218,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if actor, ok := ci.(*actor); ok {
 			lah.PermitRead, lah.PermitWrite = actor.Permissions(lb.OperatorUserID())
 			lah.PermitCert = actor.CanFetchCerts()
+		} else if _, ok := ci.(localTCPActor); ok {
+			// This identity is installed only after checking the private-file
+			// token in RunWithLocalAPIToken's per-request authentication.
+			lah.PermitRead, lah.PermitWrite, lah.PermitCert = true, true, true
 		} else if testenv.InTest() {
 			lah.PermitRead, lah.PermitWrite = true, true
 		}
@@ -501,6 +506,49 @@ func (s *Server) SetLocalBackend(lb *ipnlocal.LocalBackend) {
 // If the Server's LocalBackend has already been set, Run starts it.
 // Otherwise, the next call to SetLocalBackend will start it.
 func (s *Server) Run(ctx context.Context, ln net.Listener) error {
+	return s.run(ctx, ln, "")
+}
+
+// RunWithLocalAPIToken runs the normal IPN server on a loopback TCP listener.
+// Every request must present token, obtained from a private endpoint file.
+// An empty token or non-loopback listener is rejected.
+func (s *Server) RunWithLocalAPIToken(ctx context.Context, ln net.Listener, token string) error {
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || !addr.IP.IsLoopback() || token == "" {
+		ln.Close()
+		return errors.New("authenticated LocalAPI requires a loopback TCP listener and a nonempty token")
+	}
+	return s.run(ctx, ln, token)
+}
+
+// localTCPActor grants the same privileges as ownership of the private token.
+type localTCPActor struct{ ipnauth.Actor }
+
+func (localTCPActor) IsLocalAdmin(string) bool { return true }
+
+func (s *Server) localTCPHandler(token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Sec-Tailscale") != "localapi" {
+			http.Error(w, "missing Sec-Tailscale: localapi header", http.StatusForbidden)
+			return
+		}
+		_, password, ok := r.BasicAuth()
+		if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(token)) != 1 {
+			http.Error(w, "LocalAPI authentication required", http.StatusUnauthorized)
+			return
+		}
+		// Retain the LocalAPI browser-origin protections even for endpoints
+		// such as /server-status that are served before the LocalAPI handler.
+		if r.Header.Get("Origin") != "" || r.Referer() != "" {
+			http.Error(w, "invalid localapi request", http.StatusForbidden)
+			return
+		}
+		ctx := actorKey.WithValue(r.Context(), actorOrError{actor: localTCPActor{ipnauth.Self}})
+		s.serveHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) run(ctx context.Context, ln net.Listener, token string) error {
 	defer func() {
 		if lb := s.lb.Load(); lb != nil {
 			lb.Shutdown()
@@ -530,10 +578,17 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 		ready()
 	}
 
+	var handler http.Handler = http.HandlerFunc(s.serveHTTP)
+	if token != "" {
+		handler = s.localTCPHandler(token)
+	}
 	hs := &http.Server{
-		Handler:     http.HandlerFunc(s.serveHTTP),
+		Handler:     handler,
 		BaseContext: func(_ net.Listener) context.Context { return ctx },
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if token != "" {
+				return ctx // TCP clients are authenticated per request.
+			}
 			return contextWithActor(ctx, s.logf, c)
 		},
 		ErrorLog: logger.StdLogger(logger.WithPrefix(s.logf, "ipnserver: ")),

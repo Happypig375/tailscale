@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 
+	"tailscale.com/net/localtcp"
 	"tailscale.com/syncs"
 	"tailscale.com/version/distro"
 )
@@ -51,8 +52,12 @@ func WindowsDevTailscaledSocket() string {
 }
 
 // DefaultTailscaledSocket returns the path to the tailscaled Unix socket
-// or the empty string if there's no reasonable default.
+// (a private endpoint file in restricted Linux builds), or the empty string
+// if there's no reasonable default.
 func DefaultTailscaledSocket() string {
+	if localtcp.Enabled {
+		return filepath.Join(restrictedStateDir(), "localapi.json")
+	}
 	if runtime.GOOS == "windows" {
 		return WindowsProtectedPipePrefix + `Tailscale\tailscaled`
 	}
@@ -101,6 +106,9 @@ var (
 // tailscaled state file, or the empty string if there's no reasonable
 // default value.
 func DefaultTailscaledStateFile() string {
+	if localtcp.Enabled {
+		return filepath.Join(restrictedStateDir(), "tailscaled.state")
+	}
 	if f := stateFileFunc; f != nil {
 		return f()
 	}
@@ -108,6 +116,15 @@ func DefaultTailscaledStateFile() string {
 		return filepath.Join(os.Getenv("ProgramData"), "Tailscale", "server-state.conf")
 	}
 	return ""
+}
+
+// restrictedStateDir keeps state beside the executable, independent of cwd.
+func restrictedStateDir() string {
+	executable, err := os.Executable()
+	if err != nil {
+		log.Fatalf("locate executable for state directory: %v", err)
+	}
+	return filepath.Join(filepath.Dir(executable), "tailscale-sandbox-state")
 }
 
 // DefaultTailscaledStateDir returns the default state directory

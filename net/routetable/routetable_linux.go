@@ -139,6 +139,9 @@ func (r RouteEntryLinux) ScopeName() string {
 // Get returns route entries from the system route table, limited to at most
 // max results.
 func Get(max int) ([]RouteEntry, error) {
+	if netmon.NetlinkDisabled() {
+		return nil, fmt.Errorf("route table unavailable with TS_NO_NETLINK")
+	}
 	// Fetching the list of interfaces can race with fetching our route
 	// table, but we do it anyway since it's helpful for debugging.
 	ifs, err := netmon.GetInterfaceList()

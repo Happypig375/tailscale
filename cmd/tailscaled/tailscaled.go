@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,6 +48,7 @@ import (
 	"tailscale.com/net/dns"
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/dnsfallback"
+	"tailscale.com/net/localtcp"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tsdial"
@@ -71,6 +73,9 @@ import (
 
 // defaultTunName returns the default tun device name for the platform.
 func defaultTunName() string {
+	if localtcp.Enabled {
+		return "userspace-networking"
+	}
 	switch runtime.GOOS {
 	case "openbsd":
 		return "tun"
@@ -205,6 +210,22 @@ func main() {
 	}
 	envknob.ApplyDiskConfig()
 	applyIntegrationTestEnvKnob()
+	if f, ok := hookLoadProxyEnvironment.GetOk(); ok {
+		if err := f(); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if localtcp.Enabled {
+		// Restricted builds retain the upstream daemon/CLI lifecycle and
+		// flags, with userspace networking and proxy-compatible transports.
+		for _, name := range []string{
+			"TS_NO_NETLINK", "TS_DEBUG_ALWAYS_USE_DERP",
+			"TS_ASSUME_NETWORK_UP_FOR_TEST", "TS_NO_LOGS_NO_SUPPORT",
+			"TS_CONTROL_WEBSOCKET", "TS_DEBUG_DERP_WS_CLIENT",
+		} {
+			envknob.Setenv(name, "true")
+		}
+	}
 
 	defaultVerbosity := envknob.RegisterInt("TS_LOG_VERBOSITY")
 	printVersion := false
@@ -475,6 +496,9 @@ var logPol *logpolicy.Policy // or nil if not used
 var debugMux *http.ServeMux
 
 func run() (err error) {
+	if netmon.NetlinkDisabled() && args.tunname != "userspace-networking" {
+		return errors.New("TS_NO_NETLINK requires --tun=userspace-networking")
+	}
 	var logf logger.Logf = log.Printf
 
 	// Install an event bus as early as possible, so that it's
@@ -561,8 +585,10 @@ func run() (err error) {
 	// Always clean up, even if we're going to run the server. This covers cases
 	// such as when a system was rebooted without shutting down, or tailscaled
 	// crashed, and would for example restore system DNS configuration.
-	dns.CleanUp(logf, netMon, sys.Bus.Get(), sys.HealthTracker.Get(), args.tunname)
-	router.CleanUp(logf, netMon, args.tunname)
+	if !localtcp.Enabled {
+		dns.CleanUp(logf, netMon, sys.Bus.Get(), sys.HealthTracker.Get(), args.tunname)
+		router.CleanUp(logf, netMon, args.tunname)
+	}
 	// If the cleanUp flag was passed, then exit.
 	if args.cleanUp {
 		return nil
@@ -606,7 +632,14 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 		// the same name. See safesocket.ConnectCurrentUserContext.
 		listen = safesocket.ListenCurrentUser
 	}
-	ln, err := listen(args.socketpath)
+	var ln net.Listener
+	var token string
+	var err error
+	if localtcp.Enabled {
+		ln, token, err = localtcp.Listen(args.socketpath)
+	} else {
+		ln, err = listen(args.socketpath)
+	}
 	if err != nil {
 		return fmt.Errorf("safesocket.Listen: %v", err)
 	}
@@ -651,6 +684,16 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 		debugMux.HandleFunc("/debug/ipn", srv.ServeHTMLStatus)
 	}
 	var lbErr syncs.AtomicValue[error]
+	var hotkeysMu sync.Mutex
+	var stopHotkeys func()
+	defer func() {
+		cancel() // Prevent backend initialization from starting hotkeys during teardown.
+		hotkeysMu.Lock()
+		defer hotkeysMu.Unlock()
+		if stopHotkeys != nil {
+			stopHotkeys()
+		}
+	}()
 
 	go func() {
 		t0 := time.Now()
@@ -677,6 +720,13 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 				}
 			}
 			srv.SetLocalBackend(lb)
+			hotkeysMu.Lock()
+			if f, ok := hookLoginHotkeys.GetOk(); ok {
+				if ctx.Err() == nil {
+					stopHotkeys = f(ctx, lb, logf)
+				}
+			}
+			hotkeysMu.Unlock()
 			close(wgEngineCreated)
 			return
 		}
@@ -684,7 +734,11 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 		cancel()         // make srv.Run below complete
 	}()
 
-	err = srv.Run(ctx, ln)
+	if localtcp.Enabled {
+		err = srv.RunWithLocalAPIToken(ctx, ln, token)
+	} else {
+		err = srv.Run(ctx, ln)
+	}
 
 	if err != nil && lbErr.Load() != nil {
 		return fmt.Errorf("getLocalBackend error: %v", lbErr.Load())
@@ -697,6 +751,10 @@ func startIPNServer(ctx context.Context, logf logger.Logf, logID logid.PublicID,
 
 	return nil
 }
+
+var hookLoginHotkeys feature.Hook[func(context.Context, *ipnlocal.LocalBackend, logger.Logf) func()]
+
+var hookLoadProxyEnvironment feature.Hook[func() error]
 
 var (
 	hookNewNetstack feature.Hook[func(_ logger.Logf, _ *tsd.System, onlyNetstack bool) (tsd.NetstackImpl, error)]

@@ -42,6 +42,9 @@ ens18   00000000        0100000A        0003    0       0       0       00000000
 ens18   0000000A        00000000        0001    0       0       0       0000FFFF        0       0       0
 */
 func likelyHomeRouterIPLinux() (ret netip.Addr, myIP netip.Addr, ok bool) {
+	if NetlinkDisabled() {
+		return
+	}
 	if !buildfeatures.HasPortMapper {
 		return
 	}
@@ -127,6 +130,9 @@ func likelyHomeRouterIPLinux() (ret netip.Addr, myIP netip.Addr, ok bool) {
 }
 
 func defaultRoute() (d DefaultRouteDetails, err error) {
+	if NetlinkDisabled() {
+		return DefaultRouteDetails{InterfaceName: noNetlinkInterfaceName}, nil
+	}
 	v, err := defaultRouteInterfaceProcNet()
 	if err == nil {
 		d.InterfaceName = v

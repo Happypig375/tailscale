@@ -53,7 +53,11 @@ import (
 // absence of that it can be any string that describes the remote
 // endpoint, or the empty string to makes RemoteAddr() return a place
 // holder value.
+//
+// The WebSocket message read limit is disabled. This is a byte stream;
+// consumers such as DERP and Noise enforce their own protocol limits.
 func NetConn(ctx context.Context, c *websocket.Conn, msgType websocket.MessageType, remoteAddr string) net.Conn {
+	c.SetReadLimit(-1)
 	nc := &netConn{
 		c:          c,
 		msgType:    msgType,

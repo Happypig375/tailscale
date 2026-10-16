@@ -19,6 +19,7 @@ import (
 	"tailscale.com/feature"
 	"tailscale.com/hostinfo"
 	"tailscale.com/ipn/ipnlocal"
+	"tailscale.com/net/netmon"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tailcfg/peercap"
 	"tailscale.com/util/clientmetric"
@@ -177,6 +178,9 @@ func getWoLMACs() (macs []string) {
 	if s := wakeMAC(); s != "" {
 		switch s {
 		case "auto":
+			if netmon.NetlinkDisabled() {
+				return nil
+			}
 			ifs, _ := net.Interfaces()
 			for _, iface := range ifs {
 				if iface.Flags&net.FlagLoopback != 0 {

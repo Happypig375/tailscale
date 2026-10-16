@@ -60,3 +60,6 @@ client/web/build/assets
 /.stfolder
 fbstatus
 gafpush
+
+# Restricted-build node state and LocalAPI credentials.
+tailscale-sandbox-state/

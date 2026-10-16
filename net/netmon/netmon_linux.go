@@ -57,6 +57,9 @@ type nlConn struct {
 }
 
 func newOSMon(bus *eventbus.Bus, logf logger.Logf, m *Monitor) (osMon, error) {
+	if NetlinkDisabled() {
+		return newPollingMon(logf, m)
+	}
 	conn, err := netlink.Dial(unix.NETLINK_ROUTE, &netlink.Config{
 		// Routes get us most of the events of interest, but we need
 		// address as well to cover things like DHCP deciding to give

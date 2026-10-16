@@ -56,6 +56,10 @@ func (m *Monitor) SetTailscaleInterfaceName(ifName string) {
 //
 // This should be called as early as possible during tailscaled startup.
 func SetTailscaleInterfaceProps(ifName string, ifIndex int) {
+	if NetlinkDisabled() {
+		tsIfProps.set(ifName, ifIndex)
+		return
+	}
 	if ifIndex != 0 {
 		tsIfProps.set(ifName, ifIndex)
 		return

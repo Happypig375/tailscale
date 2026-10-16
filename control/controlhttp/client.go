@@ -65,6 +65,9 @@ var stdDialer net.Dialer
 // The provided ctx is only used for the initial connection, until
 // Dial returns. It does not affect the connection once established.
 func (a *Dialer) Dial(ctx context.Context) (*ClientConn, error) {
+	if envknob.Bool("TS_CONTROL_WEBSOCKET") {
+		return a.dialWebsocket(ctx)
+	}
 	if a.Hostname == "" {
 		return nil, errors.New("required Dialer.Hostname empty")
 	}

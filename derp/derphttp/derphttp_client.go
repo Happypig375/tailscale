@@ -410,6 +410,12 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
 			return nil, 0, err
 		}
+		// Include the upgraded connection in the error cleanup below. The
+		// WebSocket dial context no longer bounds reads after the upgrade,
+		// so explicitly interrupt the DERP handshake on cancellation.
+		tcpConn = conn
+		stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
+		defer stop()
 		brw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 		derpClient, err := derp.NewClient(c.privateKey, conn, brw, c.logf,
 			derp.MeshKey(c.MeshKey),
@@ -422,9 +428,11 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		}
 		if c.preferred {
 			if err := derpClient.NotePreferred(true); err != nil {
-				go conn.Close()
 				return nil, 0, err
 			}
+		}
+		if !stop() {
+			return nil, 0, ctx.Err()
 		}
 		c.serverPubKey = derpClient.ServerPublicKey()
 		c.client = derpClient

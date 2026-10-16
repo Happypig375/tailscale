@@ -41,6 +41,7 @@ import (
 	"tailscale.com/feature/buildfeatures"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/localtcp"
 	"tailscale.com/net/netutil"
 	"tailscale.com/net/udprelay/status"
 	"tailscale.com/paths"
@@ -80,6 +81,7 @@ type Client struct {
 	Transport http.RoundTripper
 
 	// Socket specifies an alternate path to the local Tailscale socket.
+	// In restricted Linux builds, this is a private loopback endpoint file.
 	// If empty, a platform-specific default is used.
 	Socket string
 
@@ -119,6 +121,14 @@ func (lc *Client) dialer() func(ctx context.Context, network, addr string) (net.
 func (lc *Client) defaultDialer(ctx context.Context, network, addr string) (net.Conn, error) {
 	if addr != "local-tailscaled.sock:80" {
 		return nil, fmt.Errorf("unexpected URL address %q", addr)
+	}
+	if localtcp.Enabled {
+		ep, err := localtcp.Read(lc.socket())
+		if err != nil {
+			return nil, err
+		}
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", ep.Address)
 	}
 	if !lc.UseSocketOnly {
 		// On macOS, when dialing from non-sandboxed program to sandboxed GUI running
@@ -167,6 +177,16 @@ func (lc *Client) defaultDialer(ctx context.Context, network, addr string) (net.
 // API maturity: this method is not considered a stable API and is
 // subject to change between releases.
 func (lc *Client) DoLocalRequest(req *http.Request) (*http.Response, error) {
+	if localtcp.Enabled && lc.Dial == nil && lc.Transport == nil {
+		ep, err := localtcp.Read(lc.socket())
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Sec-Tailscale", "localapi")
+		if !lc.OmitAuth {
+			req.SetBasicAuth("", ep.Token)
+		}
+	}
 	req.Header.Set("Tailscale-Cap", strconv.Itoa(int(tailcfg.CurrentCapabilityVersion)))
 	lc.tsClientOnce.Do(func() {
 		lc.tsClient = &http.Client{

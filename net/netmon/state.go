@@ -848,6 +848,9 @@ func GetInterfaceList() (InterfaceList, error) {
 // to work (Issue 2293); this wrapper lets us the Android app register
 // an alternate implementation.
 func netInterfaces() ([]Interface, error) {
+	if NetlinkDisabled() {
+		return interfacesWithoutNetlink()
+	}
 	if altNetInterfaces != nil {
 		return altNetInterfaces()
 	}

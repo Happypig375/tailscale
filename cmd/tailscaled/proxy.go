@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"tailscale.com/feature"
+	"tailscale.com/net/localtcp"
 	"tailscale.com/net/proxymux"
 	"tailscale.com/net/socks5"
 	"tailscale.com/net/tsdial"
@@ -31,7 +32,11 @@ func init() {
 
 func registerOutboundProxyFlags() {
 	flag.StringVar(&args.socksAddr, "socks5-server", "", `optional [ip]:port to run a SOCK5 server (e.g. "localhost:1080")`)
-	flag.StringVar(&args.httpProxyAddr, "outbound-http-proxy-listen", "", `optional [ip]:port to run an outbound HTTP proxy (e.g. "localhost:8080")`)
+	httpAddr := ""
+	if localtcp.Enabled {
+		httpAddr = "127.0.0.1:1055"
+	}
+	flag.StringVar(&args.httpProxyAddr, "outbound-http-proxy-listen", httpAddr, `optional [ip]:port to run an outbound HTTP proxy (e.g. "localhost:8080")`)
 }
 
 // outboundProxyListen creates listeners for local SOCKS and HTTP proxies, if
@@ -52,6 +57,9 @@ func outboundProxyListen() proxyStartFunc {
 		ln, err := net.Listen("tcp", socksAddr)
 		if err != nil {
 			log.Fatalf("proxy listener: %v", err)
+		}
+		if localtcp.Enabled {
+			log.Printf("SOCKS5 and HTTP proxy listening on %v", ln.Addr())
 		}
 		return mkProxyStartFunc(proxymux.SplitSOCKSAndHTTP(ln))
 	}
@@ -74,9 +82,9 @@ func outboundProxyListen() proxyStartFunc {
 		if err != nil {
 			log.Fatalf("HTTP proxy listener: %v", err)
 		}
-		if strings.HasSuffix(httpAddr, ":0") {
-			// Log kernel-selected port number so integration tests
-			// can find it portably.
+		if localtcp.Enabled || strings.HasSuffix(httpAddr, ":0") {
+			// Show the browser's entry point in restricted mode, and report
+			// kernel-selected ports so integration tests can discover them.
 			log.Printf("HTTP proxy listening on %v", httpListener.Addr())
 		}
 	}

@@ -6508,7 +6508,7 @@ func (b *LocalBackend) initPeerAPIListenerLocked() {
 			// We don't care about the error here.  Not all platforms set this.
 			// If ps.listen needs it, it will check for zero values and error out.
 			tsIfIndex, _ := netmon.TailscaleInterfaceIndex()
-			if tsIfIndex == 0 {
+			if tsIfIndex == 0 && !isNetstack {
 				// tailscaled sets the interface props at startup, but tsnet
 				// users of LocalBackend that don't run that code leave them
 				// unset. When there is a tun, derive the index from the
